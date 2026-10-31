@@ -10,7 +10,7 @@ scripts/release/build-guest.sh --contract-only
 scripts/release/build-guest.sh --output /path/to/artifacts
 ```
 
-Patch 0152 offers Hangul instead of Chewing on Korean Windows. The guest ships
+Patch 0153 offers Hangul instead of Chewing on Korean Windows. The guest ships
 fcitx5-hangul, and when the launcher passes `tryomarchy.locale=ko_KR`,
 `apply-host-locale` switches fcitx5 profiles that are still the image default
 to the US keyboard and Hangul. It runs at every boot before the display manager,
@@ -23,8 +23,8 @@ directories are never switched back, and other languages change nothing. The
 trigger key is unchanged. Runtime `4.0.4-11` brings fcitx5-hangul to existing
 disks with their next **Update > Omarchy**; until it is installed the profile
 is left alone, and the next boot afterwards switches it. Compatibility revision
-64 delivers the helper before login. Patch 0153 locks fcitx5-hangul and libhangul
-and refreshes the resolved package transaction.
+65 delivers the helper before login. Patch 0154 locks fcitx5-hangul and libhangul
+and refreshes the resolved package transaction, which brings in Hyprland 0.57.0.
 
 Patch 0152 turns off `quirks:skip_non_kms_dmabuf_formats` in the QEMU
 profile. Hyprland 0.57 turned it on by default, so clients were offered only

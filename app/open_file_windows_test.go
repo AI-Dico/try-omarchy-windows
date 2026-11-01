@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -274,4 +275,115 @@ func TestOpenSharedFilePolicyRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFileTypesSettingsNative(t *testing.T) {
+	launcher := os.Getenv("TRYOMARCHY_LAUNCHER_TEST_EXE")
+	if os.Getenv("TRYOMARCHY_UI_TEST") != "1" || launcher == "" {
+		t.Skip("requires an interactive Windows desktop and a candidate launcher")
+	}
+	dir := t.TempDir()
+	appID := strings.Repeat("a", 32)
+	if err := saveApprovedWindowsApps(dir, approvedAppPreferences{Apps: []approvedWindowsApp{{ID: appID, Name: "Example", Path: `C:\Example.exe`}}}); err != nil {
+		t.Fatal(err)
+	}
+	session := func(edit func(window, list uintptr)) {
+		t.Helper()
+		cmd := exec.Command(launcher, "-dir", dir, "-settings")
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		defer cmd.Process.Kill()
+		class, _ := syscall.UTF16PtrFromString("TryOmarchySettings")
+		var window, list uintptr
+		for deadline := time.Now().Add(15 * time.Second); list == 0 && time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
+			window, _, _ = user32.NewProc("FindWindowW").Call(uintptr(unsafe.Pointer(class)), 0)
+			if window != 0 {
+				var owner uint32
+				procGetWindowThreadProcessId.Call(window, uintptr(unsafe.Pointer(&owner)))
+				if owner == uint32(cmd.Process.Pid) {
+					list = findSettingsControl(window, settingsFileListID)
+				}
+			}
+		}
+		if list == 0 {
+			t.Fatal("file types section did not appear")
+		}
+		procSendMessageW.Call(window, wmCommand, settingsPageBase+4, 0)
+		edit(window, list)
+		procPostMessageW.Call(window, wmCommand, settingsSaveID, 0)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("file types settings did not save")
+		}
+	}
+	const lbGetCount, lbSetCurSel, cbSetCurSel = 0x18B, 0x186, 0x14E
+	session(func(window, list uintptr) {
+		for opener := uintptr(0); opener < 2; opener++ {
+			procSendMessageW.Call(findSettingsControl(window, settingsFileTypeID), cbSetCurSel, 0, 0)
+			procSendMessageW.Call(findSettingsControl(window, settingsFileOpenerID), cbSetCurSel, opener, 0)
+			procSendMessageW.Call(window, wmCommand, settingsFileAddID, 0)
+		}
+		if count, _, _ := procSendMessageW.Call(list, lbGetCount, 0, 0); count != 2 {
+			t.Fatalf("file type rows=%d", count)
+		}
+	})
+	loaded, err := loadApprovedFileTypes(dir)
+	if err != nil || len(loaded.Types) != 2 || loaded.Types[0].App != "" || loaded.Types[1].App != appID {
+		t.Fatalf("saved file types: %+v, %v", loaded, err)
+	}
+	session(func(window, list uintptr) {
+		if count, _, _ := procSendMessageW.Call(list, lbGetCount, 0, 0); count != 2 {
+			t.Fatalf("reopened file type rows=%d", count)
+		}
+		apps := findSettingsControl(window, settingsAppListID)
+		procSendMessageW.Call(apps, lbSetCurSel, 0, 0)
+		procSendMessageW.Call(window, wmCommand, settingsAppRemoveID, 0)
+		if count, _, _ := procSendMessageW.Call(list, lbGetCount, 0, 0); count != 1 {
+			t.Fatalf("rows after removing app=%d", count)
+		}
+		procSendMessageW.Call(list, lbSetCurSel, 0, 0)
+		procSendMessageW.Call(window, wmCommand, settingsFileRemoveID, 0)
+		if count, _, _ := procSendMessageW.Call(list, lbGetCount, 0, 0); count != 0 {
+			t.Fatalf("rows after removing type=%d", count)
+		}
+	})
+	loaded, err = loadApprovedFileTypes(dir)
+	if err != nil || len(loaded.Types) != 0 {
+		t.Fatalf("removed file types still allowed: %+v, %v", loaded, err)
+	}
+}
+
+// TestOpenSharedFileNative opens real windows, so the caller closes them.
+func TestOpenSharedFileNative(t *testing.T) {
+	if os.Getenv("TRYOMARCHY_UI_TEST") != "1" {
+		t.Skip("requires an interactive Windows desktop")
+	}
+	dir := t.TempDir()
+	share := openFileTempDir(t)
+	previous := bootShare.Load()
+	bootShare.Store(&share)
+	t.Cleanup(func() { bootShare.Store(previous) })
+	writeOpenFileFixture(t, filepath.Join(share, "folder", "한글 default opener.txt"))
+	writeOpenFileFixture(t, filepath.Join(share, "folder", "linked opener.md"))
+	appID := strings.Repeat("a", 32)
+	if err := saveApprovedWindowsApps(dir, approvedAppPreferences{Apps: []approvedWindowsApp{{ID: appID, Name: "Notepad", Path: system32("notepad.exe")}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveApprovedFileTypes(dir, approvedFileTypePreferences{SchemaVersion: 1, Types: []approvedFileType{{Ext: ".txt"}, {Ext: ".md", App: appID}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"folder/한글 default opener.txt", "folder/linked opener.md"} {
+		if err := openSharedWindowsFile(dir, rel); err != nil {
+			t.Fatalf("%s: %v", rel, err)
+		}
+	}
+	time.Sleep(4 * time.Second)
 }

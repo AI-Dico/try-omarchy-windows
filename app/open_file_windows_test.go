@@ -13,6 +13,23 @@ import (
 	"unsafe"
 )
 
+// openFileTempDir returns a test directory without 8.3 components. CI temp paths
+// can contain them, and validateSharedFile refuses such a share.
+func openFileTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	name, err := syscall.UTF16PtrFromString(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]uint16, 32768)
+	n, _, callErr := kernel32.NewProc("GetLongPathNameW").Call(uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if n == 0 || n >= uintptr(len(buf)) {
+		t.Fatalf("GetLongPathNameW: %v", callErr)
+	}
+	return syscall.UTF16ToString(buf[:n])
+}
+
 func writeOpenFileFixture(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -37,7 +54,7 @@ func makeOpenFileJunction(t *testing.T, link, target string) {
 }
 
 func TestValidateSharedFile(t *testing.T) {
-	share := t.TempDir()
+	share := openFileTempDir(t)
 	writeOpenFileFixture(t, filepath.Join(share, "folder", "Report.txt"))
 	for _, rel := range []string{"folder/Report.txt", "folder/report.TXT"} {
 		got, err := validateSharedFile(share, rel)
@@ -64,7 +81,7 @@ func TestValidateSharedFile(t *testing.T) {
 }
 
 func TestValidateSharedFileRejectsSymlinks(t *testing.T) {
-	share := t.TempDir()
+	share := openFileTempDir(t)
 	writeOpenFileFixture(t, filepath.Join(share, "real", "file.txt"))
 	link := filepath.Join(share, "link.txt")
 	if err := os.Symlink(filepath.Join(share, "real", "file.txt"), link); err != nil {
@@ -89,7 +106,7 @@ func TestValidateSharedFileRejectsSymlinks(t *testing.T) {
 }
 
 func TestValidateSharedFileRejectsJunctions(t *testing.T) {
-	base := t.TempDir()
+	base := openFileTempDir(t)
 	share := filepath.Join(base, "share")
 	target := filepath.Join(base, "target")
 	writeOpenFileFixture(t, filepath.Join(share, "file.txt"))
@@ -111,7 +128,7 @@ func TestValidateSharedFileRejectsJunctions(t *testing.T) {
 }
 
 func TestValidateSharedFileRejectsHardLinks(t *testing.T) {
-	base := t.TempDir()
+	base := openFileTempDir(t)
 	share := filepath.Join(base, "share")
 	original := filepath.Join(share, "file.txt")
 	writeOpenFileFixture(t, original)
@@ -124,7 +141,7 @@ func TestValidateSharedFileRejectsHardLinks(t *testing.T) {
 }
 
 func TestValidateSharedFileRejectsShortNames(t *testing.T) {
-	share := t.TempDir()
+	share := openFileTempDir(t)
 	longName := filepath.Join(share, "Long directory name", "Long document name.txt")
 	writeOpenFileFixture(t, longName)
 	proc := kernel32.NewProc("GetShortPathNameW")
@@ -220,7 +237,7 @@ func TestOpenSharedFileRequiresCurrentSessionShare(t *testing.T) {
 }
 
 func TestOpenSharedFilePolicyRefusals(t *testing.T) {
-	share := t.TempDir()
+	share := openFileTempDir(t)
 	previous := bootShare.Load()
 	bootShare.Store(&share)
 	t.Cleanup(func() { bootShare.Store(previous) })
